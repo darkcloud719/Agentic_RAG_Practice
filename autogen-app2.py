@@ -1,0 +1,87 @@
+from autogen_agentchat.agents import AssistantAgent
+from autogen_agentchat.ui import Console
+from autogen_ext.models.openai import AzureOpenAIChatCompletionClient
+from dotenv import load_dotenv
+from rich import print as pprint
+import os
+import logging
+import asyncio
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
+from autogen_ext.tools.mcp import StdioServerParams, mcp_server_tools
+
+load_dotenv()
+
+AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
+AZURE_OPENAI_API_ENDPOINT = os.getenv("AZURE_OPENAI_API_ENDPOINT")
+AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION")
+AZURE_OPENAI_DEPLOYMENT_4O = os.getenv("AZURE_OPENAI_DEPLOYMENT_4O")
+
+model_client = AzureOpenAIChatCompletionClient(
+    model = AZURE_OPENAI_DEPLOYMENT_4O,
+    azure_endpoint = AZURE_OPENAI_API_ENDPOINT,
+    azure_deployment = AZURE_OPENAI_DEPLOYMENT_4O,
+    api_version = AZURE_OPENAI_API_VERSION,
+    api_key = AZURE_OPENAI_API_KEY
+)
+
+search_mcp_server = StdioServerParams(
+    command="python",
+    args=["search_mcp_server.py"]
+)
+
+async def run_agent(task: str):
+
+    tools = await mcp_server_tools(search_mcp_server)
+
+    agent = AssistantAgent(
+        name="my_agent",
+        model_client=model_client,
+        tools=tools,
+        reflect_on_tool_use=True,
+        # 兩個都呼叫
+        # system_message="""
+        # You are a cybersecurity assistant.
+
+        # You MUST ALWAYS call both tools for any CVE-related question:
+        # 1. graph_search(cve): Retrieve knowledge-graph relationships for a given CVE ID.
+        # 2. vector_search(cve_description): Retrieve relevant CVE records from Azure AI Search using vector search.
+
+        # Rules:
+        # - For any CVE ID (e.g., CVE-2025-0010), you MUST call graph_search first, then call vector_search.
+        # - After both tool calls finish, merge the results and summarize.
+        # - Do NOT skip vector_search even if graph_search already returns rich data.
+        # """
+        system_message="""
+        You are a cybersecurity reasoning assistant that can call tools to retrieve facts.
+        Available tools:
+        - graph_search(cve: str) -> returns knowledge-graph triples related to a CVE.
+        - vector_search(cve_description: str) -> returns semantically similar CVE records from the vector index.
+
+        Behavior rules:
+        1. Think (chain-of-thought) internally about what you need to answer the user's question.
+        2. Decide whether a tool call is necessary. Use tools only when they meaningfully reduce uncertainty.
+        3. If a tool is called, produce a single structured tool call (name + JSON args). Wait for tool output.
+        4. After receiving tool output, re-evaluate: either (A) answer the user, or (B) call another tool, or (C) refine the query and call the same tool again.
+        5. Always include short provenance for the final answer (which tool produced which fact).
+        6. Stop after you have sufficient evidence or after 4 tool calls (to avoid infinite loops).
+        7. If uncertain, ask a single clarifying question to the user.
+        8. When calling vector_search, include the CVE description or short query; when calling graph_search, include exact CVE id if available.
+
+        Goal: maximize factual accuracy and provide a concise summary + provenance.
+        """
+    )
+
+    await Console(agent.run_stream(task=task),output_stats=True)
+
+    result = await agent.run(task=task)
+
+    if result.messages:
+        answer = result.messages[-1].content
+        pprint(f"[bold green]Answer:[/bold green] {answer}")
+
+if __name__ == "__main__":
+    # task = "What products are affected by CVE-2025-0010?"
+    # task = "What products are affected by CVE-2025-0010? And what are other similar CVEs?"
+    task = "Which CVEs are related to Chrome?"
+    asyncio.run(run_agent(task=task))
