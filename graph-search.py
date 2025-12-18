@@ -35,6 +35,6 @@ def neo4j_get_graph(tx, cve, hops=1):
 
 if __name__ == "__main__":
     with driver.session() as session:
-        cve = ["CVE-2025-0996"]
+        cve = ["CVE-2025-0010"]
         result = session.execute_read(neo4j_get_graph, cve, hops=1)
         pprint(result)
